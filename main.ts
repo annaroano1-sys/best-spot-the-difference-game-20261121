@@ -1,4 +1,4 @@
-// Garden of Differences — the hand-in assembler (Node 22, standard library only).
+// Garden of Differences R2 — the hand-in assembler (Node 22, standard library only).
 //
 // It packs the entry into /output: the playable game under game/, the
 // four screenshots under screenshots/, and dossier.json — the summary
@@ -41,7 +41,7 @@ const LIMITS = {
 };
 
 function fail(why: string): never {
-  throw new Error(`Garden of Differences hand-in failed: ${why}`);
+  throw new Error(`Garden of Differences R2 hand-in failed: ${why}`);
 }
 
 function expectDir(path: string, what: string): void {
