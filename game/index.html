@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<title>Garden of Differences — Spot the Difference</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 12px 10px 16px;
+    font-family: "Segoe UI", Verdana, Geneva, sans-serif;
+    background: #1d3a2f; color: #f2f7f2;
+  }
+  .wrap { max-width: 1280px; margin: 0 auto; }
+  header { text-align: center; margin-bottom: 10px; }
+  h1 { margin: 0; font-size: 30px; letter-spacing: 1px; }
+  h1 .leaf { color: #8be28b; }
+  .sub { margin: 4px 0 0; font-size: 14px; color: #cfe8cf; }
+  .hud {
+    display: flex; justify-content: center; align-items: center; gap: 18px;
+    margin: 10px 0; font-size: 17px; flex-wrap: wrap;
+  }
+  .pill {
+    background: #2c5a41; border: 1px solid #4d8a68; border-radius: 999px;
+    padding: 6px 16px; font-weight: 600;
+  }
+  .pill b { color: #ffe08a; }
+  button {
+    font: inherit; font-weight: 700; cursor: pointer;
+    background: #ffb703; color: #3a2a00; border: none; border-radius: 999px;
+    padding: 8px 18px;
+  }
+  button:hover { background: #ffd166; }
+  .boards { display: flex; gap: 16px; justify-content: center; }
+  .panel { text-align: center; }
+  .panel h2 {
+    margin: 0 0 6px; font-size: 16px; letter-spacing: 2px;
+    color: #ffe08a;
+  }
+  .panel.active h2 { color: #8be28b; text-decoration: underline; }
+  canvas {
+    display: block; background: #bfe6f5; border: 4px solid #f2f7f2;
+    border-radius: 10px; cursor: crosshair;
+  }
+  .keys { text-align: center; font-size: 13px; color: #b9d6bd; margin-top: 10px; }
+  .win {
+    position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
+    background: rgba(10, 30, 18, 0.82); z-index: 10;
+  }
+  .win.show { display: flex; }
+  .win .card {
+    background: #fff8e1; color: #23301f; border-radius: 16px; padding: 28px 36px;
+    text-align: center; max-width: 440px; box-shadow: 0 12px 40px rgba(0,0,0,0.5);
+  }
+  .win h2 { margin: 0 0 8px; font-size: 28px; }
+  .win p { margin: 6px 0; font-size: 16px; }
+  .win button { margin-top: 12px; font-size: 17px; padding: 10px 26px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1><span class="leaf">&#127795;</span> Garden of Differences <span class="leaf">&#127795;</span></h1>
+    <p class="sub">Two pictures of the same garden — but seven things changed. Find them all!</p>
+  </header>
+
+  <div class="hud">
+    <span class="pill">Found: <b id="foundCount">0 / 7</b></span>
+    <span class="pill">Time: <b id="timer">0:00</b></span>
+    <span class="pill">Misses: <b id="missCount">0</b></span>
+    <button id="resetBtn" type="button">Reset</button>
+  </div>
+
+  <div class="boards">
+    <div class="panel active" id="panelA">
+      <h2>PICTURE A</h2>
+      <canvas id="canvasA" width="620" height="430"></canvas>
+    </div>
+    <div class="panel" id="panelB">
+      <h2>PICTURE B</h2>
+      <canvas id="canvasB" width="620" height="430"></canvas>
+    </div>
+  </div>
+
+  <p class="keys">Mouse: click a difference on either picture &nbsp;•&nbsp; Keyboard: arrow keys move the
+    crosshair, <b>Enter</b> selects, <b>Tab</b> switches picture, <b>R</b> resets</p>
+</div>
+
+<div class="win" id="winOverlay">
+  <div class="card">
+    <h2>&#127881; You found them all!</h2>
+    <p>All <b>7 differences</b> found in <b id="winTime">0:00</b></p>
+    <p>Misses: <b id="winMisses">0</b></p>
+    <button id="againBtn" type="button">Play again</button>
+  </div>
+</div>
+
+<script>
+'use strict';
+/* Garden of Differences — one procedural scene, drawn twice.
+   Variant 0 = picture A, variant 1 = picture B. The two pictures are
+   pixel-identical except for the 7 differences below. */
+
+const W = 620, H = 430;
+
+/* The 7 differences: id, label, hotspot centre (canvas coords), radius. */
+const DIFFERENCES = [
+  { id: 0, label: 'sun colour',        x: 72,  y: 62,  r: 30 },
+  { id: 1, label: 'missing red tulip', x: 210, y: 388, r: 26 },
+  { id: 2, label: 'extra bird',        x: 470, y: 70,  r: 26 },
+  { id: 3, label: 'door colour',       x: 483, y: 268, r: 26 },
+  { id: 4, label: 'missing apple',     x: 125, y: 255, r: 24 },
+  { id: 5, label: 'duck direction',    x: 460, y: 378, r: 30 },
+  { id: 6, label: 'butterfly colour',  x: 300, y: 150, r: 26 },
+];
+
+const state = {
+  found: [],          // ids of differences found
+  misses: 0,
+  startMs: Date.now(),
+  won: false,
+  crosshair: { panel: 0, x: 310, y: 215 },
+  missMarks: [],      // {panel, x, y, until}
+};
+
+const canvasA = document.getElementById('canvasA');
+const canvasB = document.getElementById('canvasB');
+const ctxA = canvasA.getContext('2d');
+const ctxB = canvasB.getContext('2d');
+
+function circle(ctx, x, y, r) { ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill(); }
+function ellipse(ctx, x, y, rx, ry) { ctx.beginPath(); ctx.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2); ctx.fill(); }
+
+/* ---------- scene pieces ---------- */
+function drawSky(ctx, v) {
+  const g = ctx.createLinearGradient(0, 0, 0, 260);
+  g.addColorStop(0, '#7ec8f2'); g.addColorStop(1, '#d8f1fb');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, 265);
+  // sun (difference 0: yellow with rays in A, plain orange in B)
+  ctx.fillStyle = v === 0 ? '#ffd93d' : '#ff8c42';
+  circle(ctx, 72, 62, 32);
+  if (v === 0) {
+    ctx.strokeStyle = '#ffd93d'; ctx.lineWidth = 4;
+    for (let i = 0; i < 8; i++) {
+      const a = (i / 8) * Math.PI * 2;
+      ctx.beginPath();
+      ctx.moveTo(72 + Math.cos(a) * 40, 62 + Math.sin(a) * 40);
+      ctx.lineTo(72 + Math.cos(a) * 50, 62 + Math.sin(a) * 50);
+      ctx.stroke();
+    }
+  }
+  // clouds
+  ctx.fillStyle = '#ffffff';
+  cloud(ctx, 200, 55, 1); cloud(ctx, 380, 38, 1.25); cloud(ctx, 520, 82, 0.85);
+  // birds (difference 2: B has a third bird)
+  bird(ctx, 300, 92); bird(ctx, 342, 112);
+  if (v === 1) bird(ctx, 470, 70);
+}
+function cloud(ctx, x, y, s) {
+  circle(ctx, x, y, 16 * s); circle(ctx, x + 18 * s, y + 3 * s, 13 * s);
+  circle(ctx, x - 18 * s, y + 4 * s, 12 * s); circle(ctx, x + 4 * s, y - 9 * s, 13 * s);
+}
+function bird(ctx, x, y) {
+  ctx.strokeStyle = '#2b3a42'; ctx.lineWidth = 2.5; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(x - 9, y); ctx.quadraticCurveTo(x - 4, y - 7, x, y);
+  ctx.quadraticCurveTo(x + 4, y - 7, x + 9, y); ctx.stroke();
+}
+function drawHills(ctx) {
+  ctx.fillStyle = '#8fd07a';
+  ctx.beginPath(); ctx.moveTo(0, 250); ctx.quadraticCurveTo(180, 205, 360, 248);
+  ctx.quadraticCurveTo(500, 282, 620, 240); ctx.lineTo(620, 430); ctx.lineTo(0, 430); ctx.fill();
+  ctx.fillStyle = '#6cbf5e';
+  ctx.beginPath(); ctx.moveTo(0, 300); ctx.quadraticCurveTo(220, 258, 430, 300);
+  ctx.quadraticCurveTo(540, 322, 620, 296); ctx.lineTo(620, 430); ctx.lineTo(0, 430); ctx.fill();
+}
+function drawHouse(ctx, v) {
+  // walls, roof, chimney
+  ctx.fillStyle = '#f5d6a0'; ctx.fillRect(430, 210, 116, 84);
+  ctx.fillStyle = '#d96c4a';
+  ctx.beginPath(); ctx.moveTo(418, 212); ctx.lineTo(488, 158); ctx.lineTo(558, 212); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#b85c3e'; ctx.fillRect(520, 168, 16, 34);
+  // window with panes
+  ctx.fillStyle = '#bfe8ff'; ctx.fillRect(444, 224, 26, 26);
+  ctx.strokeStyle = '#7a5230'; ctx.lineWidth = 2;
+  ctx.strokeRect(444, 224, 26, 26);
+  ctx.beginPath(); ctx.moveTo(457, 224); ctx.lineTo(457, 250); ctx.moveTo(444, 237); ctx.lineTo(470, 237); ctx.stroke();
+  // door (difference 3: blue in A, green in B)
+  ctx.fillStyle = v === 0 ? '#3d7ec9' : '#3da35d';
+  ctx.fillRect(494, 246, 26, 48);
+  ctx.fillStyle = '#ffd93d'; circle(ctx, 516, 272, 2.5);
+}
+function drawTree(ctx, v) {
+  ctx.fillStyle = '#8a5a33'; ctx.fillRect(104, 268, 14, 66);
+  ctx.fillStyle = '#2f9e44';
+  circle(ctx, 88, 258, 30); circle(ctx, 126, 246, 34); circle(ctx, 142, 276, 28);
+  // apples (difference 4: the middle apple is missing in B)
+  ctx.fillStyle = '#e63946';
+  circle(ctx, 95, 272, 7); circle(ctx, 140, 286, 7);
+  if (v === 0) circle(ctx, 125, 255, 7);
+  // mushrooms at the base
+  ctx.fillStyle = '#f4f1de'; ctx.fillRect(148, 344, 5, 9); ctx.fillRect(164, 346, 5, 8);
+  ctx.fillStyle = '#e63946';
+  ctx.beginPath(); ctx.arc(150, 344, 8, Math.PI, 0); ctx.fill();
+  ctx.beginPath(); ctx.arc(166, 346, 7, Math.PI, 0); ctx.fill();
+}
+function drawFence(ctx) {
+  ctx.fillStyle = '#e8dcc3';
+  for (let x = 24; x <= 300; x += 24) {
+    ctx.fillRect(x, 318, 10, 30);
+    ctx.beginPath(); ctx.moveTo(x, 318); ctx.lineTo(x + 5, 310); ctx.lineTo(x + 10, 318); ctx.fill();
+  }
+  ctx.fillRect(18, 326, 296, 5); ctx.fillRect(18, 338, 296, 5);
+}
+function drawPond(ctx, v) {
+  ctx.fillStyle = '#6ec1e4'; ellipse(ctx, 480, 382, 92, 26);
+  ctx.fillStyle = '#a5dcf2'; ellipse(ctx, 462, 376, 40, 9);
+  // duck (difference 5: faces left in A, right in B)
+  const dir = v === 0 ? -1 : 1;
+  ctx.fillStyle = '#ffffff';
+  ellipse(ctx, 460, 380, 16, 10);
+  circle(ctx, 460 + dir * 14, 372, 7);
+  ctx.fillStyle = '#ffb703';
+  ctx.beginPath();
+  ctx.moveTo(460 + dir * 20, 372);
+  ctx.lineTo(460 + dir * 28, 375);
+  ctx.lineTo(460 + dir * 20, 378);
+  ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#222222'; circle(ctx, 460 + dir * 16, 370, 1.6);
+  // reeds
+  ctx.strokeStyle = '#2f7d32'; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.moveTo(556, 392); ctx.lineTo(556, 366); ctx.moveTo(566, 392); ctx.lineTo(566, 372); ctx.stroke();
+}
+function drawFlowers(ctx, v) {
+  const colors = ['#e63946', '#ffd93d', '#ff70a6', '#ff8c42', '#e63946', '#ffd93d', '#ff70a6', '#ff8c42', '#e63946', '#ffd93d'];
+  const xs = [40, 90, 150, 210, 270, 330, 390, 450, 510, 570];
+  for (let i = 0; i < xs.length; i++) {
+    // difference 1: the red tulip at x=210 is missing in B
+    if (v === 1 && xs[i] === 210) continue;
+    const x = xs[i], y = 396;
+    ctx.strokeStyle = '#2f7d32'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(x, y + 12); ctx.lineTo(x, y - 8); ctx.stroke();
+    ctx.fillStyle = colors[i];
+    ctx.beginPath(); ctx.moveTo(x - 8, y - 6); ctx.lineTo(x - 8, y - 16);
+    ctx.quadraticCurveTo(x, y - 24, x + 8, y - 16); ctx.lineTo(x + 8, y - 6);
+    ctx.closePath(); ctx.fill();
+  }
+}
+function drawPath(ctx) {
+  ctx.fillStyle = '#e8dcc3';
+  ctx.beginPath(); ctx.moveTo(330, 430); ctx.lineTo(430, 296); ctx.lineTo(470, 296);
+  ctx.lineTo(560, 430); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#c9b896';
+  ellipse(ctx, 400, 400, 12, 7); ellipse(ctx, 448, 362, 12, 7); ellipse(ctx, 486, 326, 11, 6);
+}
+function drawButterfly(ctx, v) {
+  // difference 6: purple wings in A, yellow wings in B
+  const c = v === 0 ? '#9b5de5' : '#ffd93d';
+  ctx.fillStyle = c;
+  ellipse(ctx, 288, 146, 11, 15); ellipse(ctx, 312, 146, 11, 15);
+  ellipse(ctx, 290, 162, 8, 10); ellipse(ctx, 310, 162, 8, 10);
+  ctx.strokeStyle = '#3a2a4a'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(300, 140); ctx.lineTo(300, 168); ctx.stroke();
+}
+function drawGrass(ctx) {
+  ctx.strokeStyle = '#3f9142'; ctx.lineWidth = 2;
+  const spots = [[30, 420], [330, 420], [600, 420], [250, 360], [580, 340], [60, 350]];
+  for (const [x, y] of spots) {
+    ctx.beginPath(); ctx.moveTo(x - 5, y); ctx.lineTo(x - 3, y - 8); ctx.moveTo(x, y); ctx.lineTo(x, y - 10);
+    ctx.moveTo(x + 5, y); ctx.lineTo(x + 3, y - 8); ctx.stroke();
+  }
+}
+
+function drawScene(ctx, v) {
+  drawSky(ctx, v);
+  drawHills(ctx);
+  drawPath(ctx);
+  drawHouse(ctx, v);
+  drawTree(ctx, v);
+  drawFence(ctx);
+  drawPond(ctx, v);
+  drawFlowers(ctx, v);
+  drawButterfly(ctx, v);
+  drawGrass(ctx);
+}
+
+/* ---------- markers & overlays ---------- */
+function drawMarkers(ctx) {
+  for (const id of state.found) {
+    const d = DIFFERENCES[id];
+    ctx.strokeStyle = '#ff2e2e'; ctx.lineWidth = 4;
+    ctx.beginPath(); ctx.arc(d.x, d.y, d.r, 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath(); ctx.arc(d.x, d.y, d.r - 8, 0, Math.PI * 2); ctx.stroke();
+  }
+  const now = Date.now();
+  state.missMarks = state.missMarks.filter((m) => m.until > now);
+  for (const m of state.missMarks) {
+    if (m.panel !== (ctx === ctxA ? 0 : 1)) continue;
+    ctx.strokeStyle = '#ff2e2e'; ctx.lineWidth = 4; ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(m.x - 9, m.y - 9); ctx.lineTo(m.x + 9, m.y + 9);
+    ctx.moveTo(m.x + 9, m.y - 9); ctx.lineTo(m.x - 9, m.y + 9);
+    ctx.stroke();
+  }
+}
+function drawCrosshair(ctx, panel) {
+  if (state.crosshair.panel !== panel || state.won) return;
+  const { x, y } = state.crosshair;
+  ctx.strokeStyle = '#ffe08a'; ctx.lineWidth = 2.5;
+  ctx.beginPath(); ctx.arc(x, y, 12, 0, Math.PI * 2); ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(x - 18, y); ctx.lineTo(x - 7, y); ctx.moveTo(x + 7, y); ctx.lineTo(x + 18, y);
+  ctx.moveTo(x, y - 18); ctx.lineTo(x, y - 7); ctx.moveTo(x, y + 7); ctx.lineTo(x, y + 18);
+  ctx.stroke();
+  ctx.fillStyle = '#ffe08a'; circle(ctx, x, y, 2.5);
+}
+
+function render() {
+  drawScene(ctxA, 0);
+  drawScene(ctxB, 1);
+  drawMarkers(ctxA);
+  drawMarkers(ctxB);
+  drawCrosshair(ctxA, 0);
+  drawCrosshair(ctxB, 1);
+  document.getElementById('foundCount').textContent = state.found.length + ' / 7';
+  document.getElementById('missCount').textContent = state.misses;
+  document.getElementById('panelA').classList.toggle('active', state.crosshair.panel === 0);
+  document.getElementById('panelB').classList.toggle('active', state.crosshair.panel === 1);
+}
+
+/* ---------- interaction ---------- */
+function fmtTime(ms) {
+  const s = Math.floor(ms / 1000);
+  return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+}
+function tick() {
+  if (!state.won) document.getElementById('timer').textContent = fmtTime(Date.now() - state.startMs);
+}
+setInterval(tick, 500);
+setInterval(render, 120);
+
+function tryClick(panel, x, y) {
+  if (state.won) return;
+  for (const d of DIFFERENCES) {
+    if (state.found.includes(d.id)) continue;
+    const dx = x - d.x, dy = y - d.y;
+    if (dx * dx + dy * dy <= d.r * d.r + 220) {
+      state.found.push(d.id);
+      render();
+      if (state.found.length === 7) {
+        state.won = true;
+        document.getElementById('winTime').textContent = fmtTime(Date.now() - state.startMs);
+        document.getElementById('winMisses').textContent = state.misses;
+        document.getElementById('winOverlay').classList.add('show');
+      }
+      return true;
+    }
+  }
+  state.misses++;
+  state.missMarks.push({ panel, x, y, until: Date.now() + 700 });
+  render();
+  return false;
+}
+function canvasPos(canvas, ev) {
+  const r = canvas.getBoundingClientRect();
+  const scaleX = canvas.width / r.width, scaleY = canvas.height / r.height;
+  return { x: (ev.clientX - r.left) * scaleX, y: (ev.clientY - r.top) * scaleY };
+}
+canvasA.addEventListener('click', (ev) => { const p = canvasPos(canvasA, ev); tryClick(0, p.x, p.y); });
+canvasB.addEventListener('click', (ev) => { const p = canvasPos(canvasB, ev); tryClick(1, p.x, p.y); });
+
+function reset() {
+  state.found = []; state.misses = 0; state.won = false;
+  state.startMs = Date.now(); state.missMarks = [];
+  state.crosshair = { panel: 0, x: 310, y: 215 };
+  document.getElementById('winOverlay').classList.remove('show');
+  render();
+}
+document.getElementById('resetBtn').addEventListener('click', reset);
+document.getElementById('againBtn').addEventListener('click', reset);
+
+/* Keyboard: arrows move the crosshair, Enter/Space selects, Tab switches picture, R resets. */
+document.addEventListener('keydown', (ev) => {
+  const step = ev.shiftKey ? 30 : 10;
+  const c = state.crosshair;
+  if (ev.key === 'Tab') { ev.preventDefault(); c.panel = 1 - c.panel; render(); return; }
+  if (ev.key === 'Enter' || ev.key === ' ') {
+    ev.preventDefault(); tryClick(c.panel, c.x, c.y); return;
+  }
+  if (ev.key === 'r' || ev.key === 'R') { reset(); return; }
+  if (ev.key === 'ArrowLeft') { c.x = Math.max(10, c.x - step); render(); }
+  if (ev.key === 'ArrowRight') { c.x = Math.min(W - 10, c.x + step); render(); }
+  if (ev.key === 'ArrowUp') { c.y = Math.max(10, c.y - step); render(); }
+  if (ev.key === 'ArrowDown') { c.y = Math.min(H - 10, c.y + step); render(); }
+});
+
+/* Test hook (used by the screenshot script, harmless in play): */
+window.SpotGame = {
+  differences: DIFFERENCES,
+  found: () => state.found.slice(),
+  clickAt: (panel, x, y) => tryClick(panel, x, y),
+  reset,
+};
+render();
+</script>
+</body>
+</html>
